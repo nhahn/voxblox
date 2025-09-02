@@ -28,6 +28,12 @@ EsdfServer::EsdfServer(rclcpp::Node::SharedPtr node)
   setupRos();
 }
 
+std::shared_ptr<EsdfMap> EsdfServer::getEsdfMapPtr() { return esdf_map_; }
+
+std::shared_ptr<const EsdfMap> EsdfServer::getEsdfMapPtr() const {
+  return esdf_map_;
+}
+
 void EsdfServer::setupRos() {
 
 
@@ -155,6 +161,8 @@ void EsdfServer::publishTraversable() {
 }
 
 void EsdfServer::publishMap(bool reset_remote_map) {
+  TsdfServer::publishMap();
+
   if (!publish_esdf_map_) {
     return;
   }
@@ -179,7 +187,6 @@ void EsdfServer::publishMap(bool reset_remote_map) {
     publish_map_timer.Stop();
   }
   num_subscribers_esdf_map_ = subscribers;
-  TsdfServer::publishMap();
 }
 
 bool EsdfServer::saveMap(const std::string& file_path) {
@@ -233,6 +240,8 @@ void EsdfServer::setTraversabilityRadius(float traversability_radius) {
 }
 
 void EsdfServer::newPoseCallback(const Transformation& T_G_C) {
+  TsdfServer::newPoseCallback(T_G_C);
+
   if (clear_sphere_for_planning_) {
     esdf_integrator_->addNewRobotPosition(T_G_C.getPosition());
   }
@@ -271,6 +280,27 @@ void EsdfServer::clear() {
   // Publish a message to reset the map to all subscribers.
   constexpr bool kResetRemoteMap = true;
   publishMap(kResetRemoteMap);
+}
+
+void EsdfServer::pruneMap() {
+  TsdfServer::pruneMap();
+
+  size_t num_pruned_blocks = 0u;
+  BlockIndexList esdf_blocks_;
+  esdf_map_->getEsdfLayerPtr()->getAllAllocatedBlocks(&esdf_blocks_);
+  for (const BlockIndex& esdf_block_index : esdf_blocks_) {
+    if (!tsdf_map_->getTsdfLayer().hasBlock(esdf_block_index)) {
+      // Avoid pruning blocks that are already queued to be updated
+      // NOTE: This is mainly important when using clear spheres for planning
+      if (!esdf_integrator_->blockQueuedForUpdate(esdf_block_index)) {
+        ++num_pruned_blocks;
+        esdf_map_->getEsdfLayerPtr()->removeBlock(esdf_block_index);
+      }
+    }
+  }
+
+  RCLCPP_DEBUG_STREAM(node_->get_logger(),
+                       "Pruned " << num_pruned_blocks << " ESDF blocks");
 }
 
 }  // namespace voxblox

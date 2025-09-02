@@ -66,7 +66,6 @@ bool deserializeMsgToLayer(const voxblox_msgs::msg::Layer* msg,
   }
 
   if (action == MapDerializationAction::kReset) {
-    LOG(INFO) << "Resetting current layer.";
     layer->removeAllBlocks();
   }
 

@@ -126,6 +126,22 @@ inline MeshIntegratorConfig getMeshIntegratorConfigFromRosParam(rclcpp::Node * n
     integrator_config.integration_order_mode = node_->declare_parameter(
         "integration_order_mode", integrator_config.integration_order_mode);
 
+    integrator_config.integrator_threads = node_->declare_parameter(
+        "sparsity_compensation_factor",
+        static_cast<int>(integrator_config.integrator_threads));
+    integrator_config.sensor_horizontal_resolution = node_->declare_parameter(
+        "sensor_horizontal_resolution",
+        integrator_config.sensor_horizontal_resolution);
+    integrator_config.sensor_vertical_resolution = node_->declare_parameter(
+        "sensor_vertical_resolution",
+        integrator_config.sensor_vertical_resolution);
+    integrator_config.sensor_vertical_field_of_view_degrees = node_->declare_parameter(
+        "sensor_vertical_field_of_view_degrees",
+        integrator_config.sensor_vertical_field_of_view_degrees);        
+    integrator_config.use_missing_points_for_clearing = node_->declare_parameter(
+        "use_missing_points_for_clearing",
+        integrator_config.use_missing_points_for_clearing);    
+
     double truncation_distance = integrator_config.default_truncation_distance;
     truncation_distance =
         node_->declare_parameter("truncation_distance", truncation_distance);

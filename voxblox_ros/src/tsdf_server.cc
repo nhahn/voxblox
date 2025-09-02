@@ -1,8 +1,12 @@
 #include "voxblox_ros/tsdf_server.h"
 
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <minkindr_conversions/kindr_msg.h>
 #include <minkindr_conversions/kindr_tf.h>
 #include "voxblox_ros/ros_parameters.hpp"
+#include <voxblox/integrator/projective_tsdf_integrator.h>
+#include <voxblox_msgs/msg/submap.hpp>
+
 #include "voxblox_ros/conversions.h"
 #include "voxblox_ros/node_helper.h"
 
@@ -13,10 +17,12 @@ TsdfServer::TsdfServer(rclcpp::Node::SharedPtr node)
       transformer_(node.get()),
       verbose_(true),
       world_frame_("world"),
+      robot_name_("robot"),
       icp_corrected_frame_("icp_corrected"),
       pose_corrected_frame_("pose_corrected"),
       max_block_distance_from_body_(std::numeric_limits<FloatingPoint>::max()),
       slice_level_(0.5),
+      slice_level_follow_robot_(false),
       use_freespace_pointcloud_(false),
       color_map_(new RainbowColorMap()),
       publish_pointclouds_on_update_(false),
@@ -27,10 +33,15 @@ TsdfServer::TsdfServer(rclcpp::Node::SharedPtr node)
       enable_icp_(false),
       accumulate_icp_corrections_(true),
       pointcloud_queue_size_(1),
-      num_subscribers_tsdf_map_(0) {
+      num_subscribers_tsdf_map_(0),
+      pointcloud_deintegration_queue_length_(0),
+      map_needs_pruning_(false) {
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*node_);
 
   tsdf_config = getTsdfMapConfigFromRosParam(node.get());
+  num_voxels_per_block_ =  tsdf_config.tsdf_voxels_per_side *
+                            tsdf_config.tsdf_voxels_per_side *
+                            tsdf_config.tsdf_voxels_per_side;
   tsdf_integrator_config = getTsdfIntegratorConfigFromRosParam(node.get());
   const MeshIntegratorConfig mesh_config =
       getMeshIntegratorConfigFromRosParam(node.get());
@@ -79,7 +90,10 @@ TsdfServer::TsdfServer(rclcpp::Node::SharedPtr node)
       std::bind(&TsdfServer::tsdfMapCallback, this, std::placeholders::_1));
   publish_tsdf_map_ =
       node_->declare_parameter("publish_tsdf_map", publish_tsdf_map_);
+  submap_pub_ = node_->create_publisher<voxblox_msgs::msg::Submap>(robot_ns + "/" + node_ns + "/submap_out", 1);
 
+  reprojected_pointcloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(
+      robot_ns + "/" + node_ns + "/reprojected_pointcloud", 1);
   if (use_freespace_pointcloud_) {
     // points that are not inside an object, but may also not be on a surface.
     // These will only be used to mark freespace beyond the truncation distance.
@@ -106,19 +120,8 @@ TsdfServer::TsdfServer(rclcpp::Node::SharedPtr node)
   std::string method("merged");
   method = node_->declare_parameter("method", method);
   std::cout << "Integration method : " << method << std::endl;
-  if (method.compare("simple") == 0) {
-    tsdf_integrator_.reset(new SimpleTsdfIntegrator(
-        tsdf_integrator_config, tsdf_map_->getTsdfLayerPtr()));
-  } else if (method.compare("merged") == 0) {
-    tsdf_integrator_.reset(new MergedTsdfIntegrator(
-        tsdf_integrator_config, tsdf_map_->getTsdfLayerPtr()));
-  } else if (method.compare("fast") == 0) {
-    tsdf_integrator_.reset(new FastTsdfIntegrator(
-        tsdf_integrator_config, tsdf_map_->getTsdfLayerPtr()));
-  } else {
-    tsdf_integrator_.reset(new SimpleTsdfIntegrator(
-        tsdf_integrator_config, tsdf_map_->getTsdfLayerPtr()));
-  }
+  tsdf_integrator_ = TsdfIntegratorFactory::create(
+      method, tsdf_integrator_config, tsdf_map_->getTsdfLayerPtr());
 
   mesh_layer_.reset(new MeshLayer(tsdf_map_->block_size()));
 
@@ -181,6 +184,17 @@ TsdfServer::TsdfServer(rclcpp::Node::SharedPtr node)
         rclcpp::Duration::from_seconds(publish_map_every_n_sec),
         std::bind(&TsdfServer::publishMapEvent, this));
   }
+
+  double publish_submap_every_n_sec = -1.0;
+  publish_submap_every_n_sec = node_->declare_parameter(
+      "publish_submap_every_n_sec", publish_submap_every_n_sec);
+  if (publish_submap_every_n_sec > 0.0) {
+      publish_submap_timer_ = rclcpp::create_timer(
+          node_, node_->get_clock(),
+          rclcpp::Duration::from_seconds(publish_submap_every_n_sec),
+          std::bind(&TsdfServer::publishSubmapEvent, this));
+  }
+
 }
 
 void TsdfServer::getServerConfigFromRosParam() {
@@ -209,6 +223,10 @@ void TsdfServer::getServerConfigFromRosParam() {
   accumulate_icp_corrections_ = node_->declare_parameter(
       "accumulate_icp_corrections", accumulate_icp_corrections_);
   verbose_ = node_->declare_parameter("verbose", verbose_);
+  slice_level_follow_robot_ = node_->declare_parameter(
+      "slice_level_follow_robot", slice_level_follow_robot_);
+  robot_name_ = node_->declare_parameter(
+      "robot_name", robot_name_);
 
   // Mesh settings.
   mesh_filename_ = node_->declare_parameter("mesh_filename", mesh_filename_);
@@ -262,8 +280,8 @@ void TsdfServer::processPointCloudMessageAndInsert(
     }
   }
 
-  Pointcloud points_C;
-  Colors colors;
+  auto points_C = std::make_shared<Pointcloud>();
+  auto colors = std::make_shared<Colors>();
   Traversability traversability_values;
   timing::Timer ptcloud_timer("ptcloud_preprocess");
 
@@ -272,19 +290,19 @@ void TsdfServer::processPointCloudMessageAndInsert(
     pcl::PointCloud<pcl::PointXYZRGB> pointcloud_pcl;
     // pointcloud_pcl is modified below:
     pcl::fromROSMsg(*pointcloud_msg, pointcloud_pcl);
-    convertPointcloud(pointcloud_pcl, color_map_, &points_C, &colors);
+    convertPointcloud(pointcloud_pcl, color_map_, points_C.get(), colors.get());
   } else if (has_intensity) {
     pcl::PointCloud<pcl::PointXYZI> pointcloud_pcl;
     // pointcloud_pcl is modified below:
     pcl::fromROSMsg(*pointcloud_msg, pointcloud_pcl);
     // assign traversability values from the intensity field.
     assignTraversabilityValues(pointcloud_pcl, &traversability_values);
-    convertPointcloud(pointcloud_pcl, color_map_, &points_C, &colors);
+    convertPointcloud(pointcloud_pcl, color_map_, points_C.get(), colors.get());
   } else {
     pcl::PointCloud<pcl::PointXYZ> pointcloud_pcl;
     // pointcloud_pcl is modified below:
     pcl::fromROSMsg(*pointcloud_msg, pointcloud_pcl);
-    convertPointcloud(pointcloud_pcl, color_map_, &points_C, &colors);
+    convertPointcloud(pointcloud_pcl, color_map_, points_C.get(), colors.get());
   }
   ptcloud_timer.Stop();
 
@@ -296,7 +314,7 @@ void TsdfServer::processPointCloudMessageAndInsert(
     }
     static Transformation T_offset;
     const size_t num_icp_updates =
-        icp_->runICP(tsdf_map_->getTsdfLayer(), points_C,
+        icp_->runICP(tsdf_map_->getTsdfLayer(), *points_C,
                      icp_corrected_transform_ * T_G_C, &T_G_C_refined);
     if (verbose_) {
       RCLCPP_INFO(node_->get_logger(),
@@ -344,21 +362,57 @@ void TsdfServer::processPointCloudMessageAndInsert(
     icp_timer.Stop();
   }
 
+  // Integrate the new pointcloud
   if (verbose_) {
     RCLCPP_INFO(node_->get_logger(),
-                "Integrating a pointcloud with %lu points.", points_C.size());
+                "Integrating a pointcloud with %lu points.", points_C->size());
   }
-
-  rclcpp::Time start = rclcpp::Clock().now();
-  integratePointcloud(T_G_C_refined, points_C, colors, traversability_values,
+  rclcpp::Time start_integration = rclcpp::Clock().now();
+  integratePointcloud(pointcloud_msg->header.stamp, T_G_C_refined, points_C,
+                      colors, traversability_values,
                       is_freespace_pointcloud);
-  rclcpp::Time end = rclcpp::Clock().now();
-  auto integrating_time = (start - end);
+  rclcpp::Time end_integration = rclcpp::Clock().now();
+  auto integrating_time = (start_integration - end_integration);
   if (verbose_) {
     RCLCPP_INFO(node_->get_logger(),
                 "Finished integrating in %f seconds, have %lu blocks.",
                 integrating_time.seconds(),
                 tsdf_map_->getTsdfLayer().getNumberOfAllocatedBlocks());
+  }
+
+  // Visualize the reprojected pointcloud, usually for debugging purposes
+  if (reprojected_pointcloud_pub_->get_subscription_count() > 0) {
+    auto projective_integrator_ptr =
+        dynamic_cast<voxblox::ProjectiveTsdfIntegrator<
+            voxblox::InterpolationScheme::kAdaptive>*>(tsdf_integrator_.get());
+    if (projective_integrator_ptr) {
+      const voxblox::Pointcloud reprojected_pointcloud =
+          projective_integrator_ptr->getReprojectedPointcloud();
+
+      auto reprojected_pointcloud_msg = std::make_unique<sensor_msgs::msg::PointCloud2>();
+      reprojected_pointcloud_msg->header.frame_id =
+          pointcloud_msg->header.frame_id;
+      reprojected_pointcloud_msg->header.stamp =
+          rclcpp::Time(pointcloud_msg->header.stamp.nanosec / 1000ull);
+      pcl::PointCloud<pcl::PointXYZ> pcl_cloud;
+      for (const voxblox::Point& point : reprojected_pointcloud) {
+        pcl::PointXYZ reprojected_point = {point.x(), point.y(), point.z()};
+        pcl_cloud.push_back(reprojected_point);
+      }
+      pcl::toROSMsg(pcl_cloud, *reprojected_pointcloud_msg);
+      reprojected_pointcloud_pub_->publish(std::move(reprojected_pointcloud_msg));
+    }
+  }
+
+  // Deintegrate the pointcloud that's leaving the sliding window
+  if (pointcloud_deintegration_queue_length_ > 0) {
+    auto start_deintegration = node_->now();
+    servicePointcloudDeintegrationQueue();
+    auto end_deintegration = node_->now();
+    if (verbose_) {
+      RCLCPP_INFO(node_->get_logger(), "Finished deintegrating in %f seconds.",
+               (end_deintegration - start_deintegration).seconds());
+    }
   }
 
   timing::Timer block_remove_timer("remove_distant_blocks");
@@ -476,15 +530,90 @@ void TsdfServer::insertFreespacePointcloud(
 }
 
 void TsdfServer::integratePointcloud(
-    const Transformation& T_G_C, const Pointcloud& ptcloud_C,
-    const Colors& colors, const Traversability& traversability_values,
+    const rclcpp::Time& timestamp, const Transformation& T_G_C,
+    std::shared_ptr<const Pointcloud> ptcloud_C,
+    std::shared_ptr<const Colors> colors, const Traversability& traversability_values, const bool is_freespace_pointcloud) {
+  CHECK_EQ(ptcloud_C->size(), colors->size());
+  tsdf_integrator_->integratePointCloud(T_G_C, *ptcloud_C, *colors,traversability_values,
+                                        is_freespace_pointcloud);
+
+  if (pointcloud_deintegration_queue_length_ > 0) {
+    pointcloud_deintegration_queue_.emplace_back(PointcloudDeintegrationPacket{
+        timestamp, T_G_C, ptcloud_C, colors, is_freespace_pointcloud});
+  }
+}
+
+void TsdfServer::integratePointcloud(
+    const Transformation& T_G_C, std::shared_ptr<const Pointcloud> ptcloud_C,
+    std::shared_ptr<const Colors> colors, const Traversability& traversability_values,
     const bool is_freespace_pointcloud) {
-  CHECK_EQ(ptcloud_C.size(), colors.size());
+  CHECK_EQ(ptcloud_C->size(), colors->size());
   tsdf_integrator_->integratePointCloud(
-      T_G_C, ptcloud_C, colors, traversability_values, is_freespace_pointcloud);
+      T_G_C, *ptcloud_C, *colors, traversability_values, is_freespace_pointcloud);
+}
+
+void TsdfServer::servicePointcloudDeintegrationQueue() {
+  while (pointcloud_deintegration_queue_length_ <
+         pointcloud_deintegration_queue_.size()) {
+    const PointcloudDeintegrationPacket& oldest_pointcloud_packet =
+        pointcloud_deintegration_queue_.front();
+    if (verbose_) {
+      RCLCPP_INFO(node_->get_logger(), "Deintegrating a pointcloud with %lu points.",
+               oldest_pointcloud_packet.ptcloud_C->size());
+    }
+    Traversability traversability_values;
+    tsdf_integrator_->integratePointCloud(
+        oldest_pointcloud_packet.T_G_C, *oldest_pointcloud_packet.ptcloud_C,
+        *oldest_pointcloud_packet.colors, traversability_values,
+        oldest_pointcloud_packet.is_freespace_pointcloud,
+        /* deintegrate */ true);
+    pointcloud_deintegration_queue_.pop_front();
+    map_needs_pruning_ = true;
+  }
+}
+
+void TsdfServer::pruneMap() {
+  timing::Timer prune_map_timer("prune_fully_deintegrated_blocks");
+  size_t num_pruned_blocks = 0u;
+  BlockIndexList updated_blocks_;
+  tsdf_map_->getTsdfLayerPtr()->getAllUpdatedBlocks(Update::kMap,
+                                                    &updated_blocks_);
+  for (const BlockIndex& updated_block_index : updated_blocks_) {
+    const Block<TsdfVoxel>& updated_block =
+        tsdf_map_->getTsdfLayerPtr()->getBlockByIndex(updated_block_index);
+    bool block_contains_observed_voxels = false;
+    for (size_t linear_index = 0u; linear_index < num_voxels_per_block_;
+         ++linear_index) {
+      const voxblox::TsdfVoxel& voxel =
+          updated_block.getVoxelByLinearIndex(linear_index);
+      if (kFloatEpsilon < voxel.weight) {
+        block_contains_observed_voxels = true;
+        break;
+      }
+    }
+    if (!block_contains_observed_voxels) {
+      ++num_pruned_blocks;
+      tsdf_map_->getTsdfLayerPtr()->removeBlock(updated_block_index);
+      if (mesh_layer_->hasMeshWithIndex(updated_block_index)) {
+        Mesh::Ptr mesh_ptr =
+            mesh_layer_->getMeshPtrByIndex(updated_block_index);
+        mesh_ptr->clear();
+        mesh_ptr->updated = true;
+      }
+    }
+  }
+  prune_map_timer.Stop();
+
+  map_needs_pruning_ = false;
+  RCLCPP_DEBUG_STREAM(node_->get_logger(),
+                       "Pruned " << num_pruned_blocks << " TSDF blocks");
 }
 
 void TsdfServer::publishAllUpdatedTsdfVoxels() {
+  if (map_needs_pruning_) {
+    pruneMap();
+  }
+
   // Create a pointcloud with distance = intensity.
   pcl::PointCloud<pcl::PointXYZI> pointcloud;
 
@@ -499,6 +628,10 @@ void TsdfServer::publishAllUpdatedTsdfVoxels() {
 }
 
 void TsdfServer::publishTsdfSurfacePoints() {
+  if (map_needs_pruning_) {
+    pruneMap();
+  }
+
   // Create a pointcloud with distance = intensity.
   pcl::PointCloud<pcl::PointXYZRGB> pointcloud;
   const float surface_distance_thresh =
@@ -516,6 +649,10 @@ void TsdfServer::publishTsdfSurfacePoints() {
 }
 
 void TsdfServer::publishTsdfOccupiedNodes() {
+  if (map_needs_pruning_) {
+    pruneMap();
+  }
+
   // Create a pointcloud with distance = intensity.
 
   // @aakapatel : TODO >> The OccupancyLayer below takes forever to form for
@@ -543,10 +680,15 @@ void TsdfServer::publishTraversabilityNodes() {
 }
 
 void TsdfServer::publishSlices() {
+  if (map_needs_pruning_) {
+    pruneMap();
+  }
+
   pcl::PointCloud<pcl::PointXYZI> pointcloud;
 
-  createDistancePointcloudFromTsdfLayerSlice(tsdf_map_->getTsdfLayer(), 2,
-                                             slice_level_, &pointcloud);
+  constexpr int kZAxisIndex = 2;
+  createDistancePointcloudFromTsdfLayerSlice(
+      tsdf_map_->getTsdfLayer(), kZAxisIndex, slice_level_, &pointcloud);
 
   pointcloud.header.frame_id = world_frame_;
 
@@ -557,6 +699,10 @@ void TsdfServer::publishSlices() {
 }
 
 void TsdfServer::publishMap(bool reset_remote_map) {
+  if (map_needs_pruning_) {
+    pruneMap();
+  }
+
   if (!publish_tsdf_map_) {
     return;
   }
@@ -582,7 +728,30 @@ void TsdfServer::publishMap(bool reset_remote_map) {
   num_subscribers_tsdf_map_ = subscribers;
 }
 
+void TsdfServer::publishSubmap() {
+  if (0 < this->submap_pub_->get_subscription_count()) {
+    voxblox_msgs::msg::Submap submap_msg;
+    submap_msg.robot_name = robot_name_;
+    serializeLayerAsMsg<TsdfVoxel>(this->tsdf_map_->getTsdfLayer(),
+                                   /* only_updated */ false, &submap_msg.layer);
+    for (const PointcloudDeintegrationPacket& pointcloud_queue_packet :
+         pointcloud_deintegration_queue_) {
+      geometry_msgs::msg::PoseStamped pose_msg;
+      pose_msg.header.frame_id = world_frame_;
+      pose_msg.header.stamp = pointcloud_queue_packet.timestamp;
+      tf2::poseKindrToMsg(pointcloud_queue_packet.T_G_C.cast<double>(),
+                         &pose_msg.pose);
+      submap_msg.trajectory.poses.emplace_back(pose_msg);
+    }
+    this->submap_pub_->publish(submap_msg);
+  }
+}
+
 void TsdfServer::publishPointclouds() {
+  if (map_needs_pruning_) {
+    pruneMap();
+  }
+
   // Combined function to publish all possible pointcloud messages -- surface
   // pointclouds, updated points, and occupied points.
   publishAllUpdatedTsdfVoxels();
@@ -742,6 +911,10 @@ void TsdfServer::publishTsdfMapCallback(
 void TsdfServer::updateMeshEvent() { updateMesh(); }
 
 void TsdfServer::publishMapEvent() { publishMap(); }
+
+void TsdfServer::publishSubmapEvent() {
+  publishSubmap();
+}
 
 void TsdfServer::clear() {
   tsdf_map_->getTsdfLayerPtr()->removeAllBlocks();

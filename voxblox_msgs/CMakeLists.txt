@@ -14,10 +14,12 @@ rosidl_generate_interfaces(
         "msg/Layer.msg"
         "msg/Mesh.msg"
         "msg/MeshBlock.msg"
+        "msg/Submap.msg"
         "msg/VoxelEvaluationDetails.msg"
         "srv/FilePath.srv"
     DEPENDENCIES 
-        std_msgs 
+        std_msgs
+        nav_msgs 
 )
 
 ament_export_dependencies(rosidl_default_runtime)

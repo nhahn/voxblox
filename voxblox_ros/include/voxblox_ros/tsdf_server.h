@@ -1,6 +1,7 @@
 #ifndef VOXBLOX_ROS_TSDF_SERVER_H_
 #define VOXBLOX_ROS_TSDF_SERVER_H_
 
+#include <deque>
 #include <memory>
 #include <queue>
 #include <string>
@@ -24,6 +25,7 @@
 #include <voxblox/utils/color_maps.h>
 #include <voxblox_msgs/msg/mesh.hpp>
 #include <voxblox_msgs/srv/file_path.hpp>
+#include <voxblox_msgs/msg/submap.hpp>
 
 #include "voxblox_ros/mesh_vis.h"
 #include "voxblox_ros/ptcloud_vis.h"
@@ -52,13 +54,26 @@ class TsdfServer {
       const sensor_msgs::msg::PointCloud2::SharedPtr& pointcloud_msg,
       const Transformation& T_G_C, const bool is_freespace_pointcloud);
 
-  void integratePointcloud(const Transformation& T_G_C,
-                           const Pointcloud& ptcloud_C, const Colors& colors,
+  void integratePointcloud(const rclcpp::Time& timestamp,
+                           const Transformation& T_G_C,
+                           std::shared_ptr<const Pointcloud> ptcloud_C,
+                           std::shared_ptr<const Colors> colors,
                            const Traversability& traversability_values,
                            const bool is_freespace_pointcloud = false);
 
-  virtual void newPoseCallback(const Transformation& /*new_pose*/) {
-    // Do nothing.
+  // Note(schmluk): Provide the legacy interface for voxblox-specific packages.
+  void integratePointcloud(const Transformation& T_G_C,
+                           std::shared_ptr<const Pointcloud> ptcloud_C,
+                           std::shared_ptr<const Colors> colors,
+                           const Traversability& traversability_values,
+                           const bool is_freespace_pointcloud = false);
+
+  void servicePointcloudDeintegrationQueue();
+
+  virtual void newPoseCallback(const Transformation& T_G_C) {
+    if (slice_level_follow_robot_) {
+      slice_level_ = T_G_C.getPosition().z();
+    }
   }
 
   void publishAllUpdatedTsdfVoxels();
@@ -77,6 +92,7 @@ class TsdfServer {
   virtual void publishTraversabilityMap();
   // Publishes the complete map
   virtual void publishMap(bool reset_remote_map = false);
+  virtual void publishSubmap();
   virtual bool saveMap(const std::string& file_path);
   virtual bool loadMap(const std::string& file_path);
 
@@ -107,6 +123,7 @@ class TsdfServer {
 
   void updateMeshEvent();
   void publishMapEvent();
+  void publishSubmapEvent();
 
   std::shared_ptr<TsdfMap> getTsdfMapPtr() { return tsdf_map_; }
   std::shared_ptr<const TsdfMap> getTsdfMapPtr() const { return tsdf_map_; }
@@ -166,9 +183,11 @@ class TsdfServer {
       traversability_marker_pub_;
   rclcpp::Publisher<geometry_msgs::msg::TransformStamped>::SharedPtr
       icp_transform_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr reprojected_pointcloud_pub_;
 
   /// Publish the complete map for other nodes to consume.
   rclcpp::Publisher<voxblox_msgs::msg::Layer>::SharedPtr tsdf_map_pub_;
+  rclcpp::Publisher<voxblox_msgs::msg::Submap>::SharedPtr submap_pub_;
 
   /// Subscriber to subscribe to another node generating the map.
   rclcpp::Subscription<voxblox_msgs::msg::Layer>::SharedPtr tsdf_map_sub_;
@@ -189,7 +208,7 @@ class TsdfServer {
   // Timers.
   rclcpp::TimerBase::SharedPtr update_mesh_timer_;
   rclcpp::TimerBase::SharedPtr publish_map_timer_;
-
+  rclcpp::TimerBase::SharedPtr publish_submap_timer_;
   rclcpp::Node::SharedPtr node_;
 
   /**
@@ -205,6 +224,7 @@ class TsdfServer {
    * frame.
    */
   std::string world_frame_;
+  std::string robot_name_;
   /**
    * Name of the ICP corrected frame. Publishes TF and transform topic to this
    * if ICP on.
@@ -218,6 +238,7 @@ class TsdfServer {
 
   /// Pointcloud visualization settings.
   double slice_level_;
+  bool slice_level_follow_robot_;
 
   /// If the system should subscribe to a pointcloud giving points in freespace
   bool use_freespace_pointcloud_;
@@ -266,7 +287,7 @@ class TsdfServer {
 
   // Maps and integrators.
   std::shared_ptr<TsdfMap> tsdf_map_;
-  std::unique_ptr<TsdfIntegratorBase> tsdf_integrator_;
+  TsdfIntegratorBase::Ptr tsdf_integrator_;
 
   /// ICP matcher
   std::shared_ptr<ICP> icp_;
@@ -284,6 +305,20 @@ class TsdfServer {
   std::queue<sensor_msgs::msg::PointCloud2::SharedPtr> pointcloud_queue_;
   std::queue<sensor_msgs::msg::PointCloud2::SharedPtr>
       freespace_pointcloud_queue_;
+
+  // TODO(victorr): Add description
+  struct PointcloudDeintegrationPacket {
+    const rclcpp::Time timestamp;
+    const Transformation T_G_C;
+    std::shared_ptr<const Pointcloud> ptcloud_C;
+    std::shared_ptr<const Colors> colors;
+    const bool is_freespace_pointcloud;
+  };
+  size_t pointcloud_deintegration_queue_length_;
+  std::deque<PointcloudDeintegrationPacket> pointcloud_deintegration_queue_;
+  size_t num_voxels_per_block_;
+  bool map_needs_pruning_;
+  virtual void pruneMap();
 
   // Last message times for throttling input.
   rclcpp::Time last_msg_time_ptcloud_;
