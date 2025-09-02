@@ -28,6 +28,13 @@ namespace eigen_conversions{
     m.z = e(2);
   }
 
+  inline void pointEigenToMsg(const Eigen::Vector3d &e, geometry_msgs::msg::Point &m)
+  {
+    m.x = e(0);
+    m.y = e(1);
+    m.z = e(2);
+  }
+
 }
 
 namespace tf2 {
@@ -88,14 +95,18 @@ template <typename Scalar>
 void pointKindrToMsg(
     const Eigen::Matrix<Scalar, 3, 1>& kindr, geometry_msgs::msg::Point* msg) {
   CHECK_NOTNULL(msg);
-  pointEigenToMsg(kindr, *msg);
+  eigen_conversions::pointEigenToMsg(kindr, *msg);
 }
 
 template <typename Scalar>
 void pointMsgToKindr(
     const geometry_msgs::msg::Point& msg, Eigen::Matrix<Scalar, 3, 1>* kindr) {
   CHECK_NOTNULL(kindr);
-  pointMsgToEigen(msg, *kindr);
+  // pointMsgToEigen(msg, *kindr);
+  Eigen::Matrix<double, 3, 1> kindr_double;
+  // vectorMsgToEigen(msg, kindr_double);
+  tf2::fromMsg(msg, kindr_double);
+  *kindr = kindr_double.cast<Scalar>();
 }
 
 template <typename Scalar>
@@ -184,6 +195,21 @@ void transformMsgToKindr( // voxblox_depends
 
   quaternionMsgToKindr(msg.rotation, &rotation);
   vectorMsgToKindr(msg.translation, &position);
+
+  *kindr =
+      kindr::minimal::QuatTransformationTemplate<Scalar>(rotation, position);
+}
+
+template <typename Scalar>
+void poseMsgToKindr( // voxblox_depends
+    const geometry_msgs::msg::Pose& msg,
+    kindr::minimal::QuatTransformationTemplate<Scalar>* kindr) {
+  CHECK_NOTNULL(kindr);
+  Eigen::Matrix<Scalar, 3, 1> position;
+  Eigen::Quaternion<Scalar> rotation;
+
+  quaternionMsgToKindr(msg.orientation, &rotation);
+  pointMsgToKindr(msg.position, &position);
 
   *kindr =
       kindr::minimal::QuatTransformationTemplate<Scalar>(rotation, position);

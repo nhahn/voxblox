@@ -2,7 +2,7 @@
 
 #include <minkindr_conversions/kindr_msg.h>
 #include <minkindr_conversions/kindr_tf.h>
-
+#include "voxblox_ros/ros_parameters.hpp"
 #include "voxblox_ros/conversions.h"
 #include "voxblox_ros/node_helper.h"
 
@@ -10,7 +10,7 @@ namespace voxblox {
 
 TsdfServer::TsdfServer(rclcpp::Node::SharedPtr node)
     : node_(node),
-      transformer_(node),
+      transformer_(node.get()),
       verbose_(true),
       world_frame_("world"),
       icp_corrected_frame_("icp_corrected"),
@@ -30,10 +30,10 @@ TsdfServer::TsdfServer(rclcpp::Node::SharedPtr node)
       num_subscribers_tsdf_map_(0) {
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*node_);
 
-  tsdf_config = getTsdfMapConfigFromRosParam();
-  tsdf_integrator_config = getTsdfIntegratorConfigFromRosParam(tsdf_config);
+  tsdf_config = getTsdfMapConfigFromRosParam(node.get());
+  tsdf_integrator_config = getTsdfIntegratorConfigFromRosParam(node.get());
   const MeshIntegratorConfig mesh_config =
-      getMeshIntegratorConfigFromRosParam();
+      getMeshIntegratorConfigFromRosParam(node.get());
 
   getServerConfigFromRosParam();
   
@@ -125,7 +125,7 @@ TsdfServer::TsdfServer(rclcpp::Node::SharedPtr node)
   mesh_integrator_.reset(new MeshIntegrator<TsdfVoxel>(
       mesh_config, tsdf_map_->getTsdfLayerPtr(), mesh_layer_.get()));
 
-  icp_.reset(new ICP(getICPConfigFromRosParam()));
+  icp_.reset(new ICP(getICPConfigFromRosParam(node.get())));
 
   // Advertise services.
 
@@ -195,7 +195,7 @@ void TsdfServer::getServerConfigFromRosParam() {
       "max_block_distance_from_body", max_block_distance_from_body_);
   slice_level_ = node_->declare_parameter("slice_level", slice_level_);
   world_frame_ =
-      node_helper::declare_or_get_parameter(node_, "world_frame", world_frame_);
+      node_helper::declare_or_get_parameter(node_.get(), "world_frame", world_frame_);
   publish_pointclouds_on_update_ = node_->declare_parameter(
       "publish_pointclouds_on_update", publish_pointclouds_on_update_);
   publish_slices_ = node_->declare_parameter("publish_slices", publish_slices_);
@@ -759,7 +759,7 @@ void TsdfServer::tsdfMapCallback(
   timing::Timer receive_map_timer("map/receive_tsdf");
 
   bool success =
-      deserializeMsgToLayer<TsdfVoxel>(layer_msg, tsdf_map_->getTsdfLayerPtr());
+      deserializeMsgToLayer<TsdfVoxel>(layer_msg.get(), tsdf_map_->getTsdfLayerPtr());
 
   if (!success) {
     RCLCPP_ERROR_THROTTLE(node_->get_logger(), *node_->get_clock(), 10,

@@ -61,7 +61,7 @@ set(${PROJECT_NAME}_SRCS
 # LIBRARIES #
 #############
 
-ament_auto_add_library(${PROJECT_NAME}
+ament_auto_add_library(${PROJECT_NAME} SHARED
   ${${PROJECT_NAME}_SRCS}
 )
 

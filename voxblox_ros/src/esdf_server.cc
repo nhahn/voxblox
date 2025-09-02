@@ -2,6 +2,7 @@
 
 #include "voxblox_ros/node_helper.h"
 #include "voxblox_ros/conversions.h"
+#include "voxblox_ros/ros_parameters.hpp"
 
 namespace voxblox {
 
@@ -14,9 +15,9 @@ EsdfServer::EsdfServer(rclcpp::Node::SharedPtr node)
       traversability_radius_(1.0),
       incremental_update_(true),
       num_subscribers_esdf_map_(0) {
-  const EsdfMap::Config esdf_config = getEsdfMapConfigFromRosParam();
+  const EsdfMap::Config esdf_config = getEsdfMapConfigFromRosParam(node.get());
   const EsdfIntegrator::Config esdf_integrator_config =
-      getEsdfIntegratorConfigFromRosParam();
+      getEsdfIntegratorConfigFromRosParam(node.get(), tsdf_integrator_config);
 
   // Set up map and integrator.
   esdf_map_.reset(new EsdfMap(esdf_config));
@@ -247,7 +248,7 @@ void EsdfServer::esdfMapCallback(
   timing::Timer receive_map_timer("map/receive_esdf");
 
   bool success =
-      deserializeMsgToLayer<EsdfVoxel>(layer_msg, esdf_map_->getEsdfLayerPtr());
+      deserializeMsgToLayer<EsdfVoxel>(layer_msg.get(), esdf_map_->getEsdfLayerPtr());
 
   if (!success) {
     RCLCPP_ERROR_THROTTLE(node_->get_logger(), *node_->get_clock(), 10,

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <pcl/point_types.h>
+#include <pcl/point_cloud.h>
 #include <std_msgs/msg/color_rgba.hpp>
 
 #include <voxblox/core/common.h>
@@ -171,11 +172,11 @@ void serializeLayerAsMsg(
  * message.
  */
 template <typename VoxelType>
-bool deserializeMsgToLayer(const voxblox_msgs::msg::Layer::SharedPtr msg,
+bool deserializeMsgToLayer(const voxblox_msgs::msg::Layer* msg,
                            Layer<VoxelType>* layer);
 
 template <typename VoxelType>
-bool deserializeMsgToLayer(const voxblox_msgs::msg::Layer::SharedPtr msg,
+bool deserializeMsgToLayer(const voxblox_msgs::msg::Layer* msg,
                            const MapDerializationAction& action,
                            Layer<VoxelType>* layer);
 

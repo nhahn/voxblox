@@ -21,7 +21,7 @@ class Transformer {
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-  Transformer(rclcpp::Node::SharedPtr node);
+  Transformer(rclcpp::Node * node);
 
   void get_transformation_parameter(std::string transformation_parameter_name,
                                     std::string invert_parameter_name,
@@ -44,7 +44,7 @@ class Transformer {
   bool lookupTransformQueue(const rclcpp::Time& timestamp,
                             Transformation* transform);
 
-  rclcpp::Node::SharedPtr node_;
+  rclcpp::Node * node_;
 
   /**
    * Global/map coordinate frame. Will always look up TF transforms to this

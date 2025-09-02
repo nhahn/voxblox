@@ -5,7 +5,7 @@
 namespace node_helper {
 
 template <typename ParameterT>
-ParameterT declare_or_get_parameter(const rclcpp::Node::SharedPtr& node,
+ParameterT declare_or_get_parameter(rclcpp::Node * node,
                                     const std::string& parameter_name,
                                     const ParameterT& default_value) {
   if (!node->has_parameter(parameter_name)) {

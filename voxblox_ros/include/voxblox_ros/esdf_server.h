@@ -68,68 +68,6 @@ class EsdfServer : public TsdfServer {
 
   virtual void clear();
 
-  inline EsdfMap::Config getEsdfMapConfigFromRosParam() {
-    // EsdfMap::Config esdf_config;
-    // esdf_config.esdf_voxel_size = node_->tsdf_config.tsdf_voxel_size;
-    // esdf_config.esdf_voxels_per_side =
-    // node_->tsdf_config.tsdf_voxels_per_side; return esdf_config;
-
-    /**
-     * Workaround for OS X on mac mini not having specializations for float
-     * for some reason.
-     */
-    EsdfMap::Config esdf_config;
-    double voxel_size = esdf_config.esdf_voxel_size;
-    int voxels_per_side = esdf_config.esdf_voxels_per_side;
-    voxel_size = node_->declare_parameter("esdf_voxel_size", voxel_size);
-    voxels_per_side =
-        node_->declare_parameter("esdf_voxels_per_side", voxels_per_side);
-    if (!isPowerOfTwo(voxels_per_side)) {
-      RCLCPP_ERROR(
-          node_->get_logger(),
-          "voxels_per_side must be a power of 2, setting to default value");
-      voxels_per_side = esdf_config.esdf_voxels_per_side;
-    }
-
-    esdf_config.esdf_voxel_size = static_cast<FloatingPoint>(voxel_size);
-    esdf_config.esdf_voxels_per_side = voxels_per_side;
-
-    return esdf_config;
-  }
-
-  inline EsdfIntegrator::Config getEsdfIntegratorConfigFromRosParam() {
-    EsdfIntegrator::Config esdf_integrator_config;
-    esdf_integrator_config.min_distance_m =
-        this->tsdf_integrator_config.default_truncation_distance / 2.0;
-
-    esdf_integrator_config.full_euclidean_distance = node_->declare_parameter(
-        "esdf_euclidean_distance",
-        esdf_integrator_config.full_euclidean_distance);
-    esdf_integrator_config.max_distance_m = node_->declare_parameter(
-        "esdf_max_distance_m", esdf_integrator_config.max_distance_m);
-    esdf_integrator_config.min_distance_m = node_->declare_parameter(
-        "esdf_min_distance_m", esdf_integrator_config.min_distance_m);
-    esdf_integrator_config.default_distance_m = node_->declare_parameter(
-        "esdf_default_distance_m", esdf_integrator_config.default_distance_m);
-    esdf_integrator_config.min_diff_m = node_->declare_parameter(
-        "esdf_min_diff_m", esdf_integrator_config.min_diff_m);
-    esdf_integrator_config.clear_sphere_radius = node_->declare_parameter(
-        "clear_sphere_radius", esdf_integrator_config.clear_sphere_radius);
-    esdf_integrator_config.occupied_sphere_radius =
-        node_->declare_parameter("occupied_sphere_radius",
-                                 esdf_integrator_config.occupied_sphere_radius);
-    esdf_integrator_config.add_occupied_crust = node_->declare_parameter(
-        "esdf_add_occupied_crust", esdf_integrator_config.add_occupied_crust);
-
-    if (esdf_integrator_config.default_distance_m <
-        esdf_integrator_config.max_distance_m) {
-      esdf_integrator_config.default_distance_m =
-          esdf_integrator_config.max_distance_m;
-    }
-
-    return esdf_integrator_config;
-  }
-
  protected:
   /// Sets up publishing and subscribing. Should only be called from
   /// constructor.
