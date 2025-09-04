@@ -3,7 +3,7 @@
 
 #include <memory>
 
-#include <cv_bridge/cv_bridge.h>
+#include "cv_bridge/cv_bridge.hpp"
 #include <sensor_msgs/msg/image.hpp>
 
 #include <voxblox/core/voxel.h>

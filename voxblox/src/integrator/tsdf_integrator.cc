@@ -284,8 +284,8 @@ void SimpleTsdfIntegrator::integrateFunction(
   while (index_getter->getNextIndex(&point_idx)) {
     const Point& point_C = points_C[point_idx];
     const Color& color = colors[point_idx];
-    const TraversabilityValue& traversability_value =
-        traversability_values[point_idx];
+    // const TraversabilityValue& traversability_value =
+    //     traversability_values[point_idx];
     bool is_clearing;
     if (!isPointValid(point_C, freespace_points, &is_clearing)) {
       continue;
@@ -308,7 +308,7 @@ void SimpleTsdfIntegrator::integrateFunction(
 
       const float weight = getVoxelWeight(point_C);
 
-      voxel->traversability = traversability_value;
+      //voxel->traversability = traversability_value;
       updateTsdfVoxel(origin, point_G, global_voxel_idx, color, weight, voxel,
                       deintegrate);
     }
@@ -514,8 +514,8 @@ void FastTsdfIntegrator::integrateFunction(
               .count() < config_.max_integration_time_s * 1000000)) {
     const Point& point_C = points_C[point_idx];
     const Color& color = colors[point_idx];
-    const TraversabilityValue& traversability_value =
-        traversability_values[point_idx];
+    // const TraversabilityValue& traversability_value =
+    //     traversability_values[point_idx];
     bool is_clearing;
     if (!isPointValid(point_C, freespace_points, &is_clearing)) {
       continue;
@@ -563,7 +563,7 @@ void FastTsdfIntegrator::integrateFunction(
           allocateStorageAndGetVoxelPtr(global_voxel_idx, &block, &block_idx);
 
       const float weight = getVoxelWeight(point_C);
-      voxel->traversability = traversability_value;
+      //voxel->traversability = traversability_value;
 
       updateTsdfVoxel(origin, point_G, global_voxel_idx, color, weight, voxel,
                       deintegrate);

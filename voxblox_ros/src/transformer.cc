@@ -16,8 +16,8 @@ Transformer::Transformer(rclcpp::Node * node)
       use_tf_transforms_(true),
       timestamp_tolerance_ns_(1000000) {
   world_frame_ =
-      node_helper::declare_or_get_parameter(node_, "world_frame", world_frame_);
-  sensor_frame_ = node_->declare_parameter("sensor_frame", sensor_frame_);
+      node_helper::declare_or_get_parameter(node_, "voxblox.world_frame", world_frame_);
+  sensor_frame_ = node_->declare_parameter("voxblox.sensor_frame", sensor_frame_);
 
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
